@@ -16,22 +16,15 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"sync"
-	"time"
-
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
-
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/google/uuid"
 	"github.com/prometheus-community/pushprox/util"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-)
-
-var (
-	registrationTimeout = kingpin.Flag("registration.timeout", "After how long a registration expires.").Default("5m").Duration()
+	"net/http"
+	"sync"
+	"time"
 )
 
 // Coordinator metrics.
@@ -167,7 +160,7 @@ func (c *Coordinator) WaitForScrapeInstruction(fqdn string) (*http.Request, erro
 func (c *Coordinator) ScrapeResult(r *http.Response) error {
 	id := r.Header.Get("Id")
 	level.Info(c.logger).Log("msg", "ScrapeResult", "scrape_id", id)
-	ctx, cancel := context.WithTimeout(context.Background(), util.GetScrapeTimeout(maxScrapeTimeout, defaultScrapeTimeout, r.Header))
+	ctx, cancel := context.WithTimeout(context.Background(), util.GetScrapeTimeout(&maxScrapeTimeout, &defaultScrapeTimeout, r.Header))
 	defer cancel()
 	// Don't expose internal headers.
 	r.Header.Del("Id")
@@ -194,7 +187,7 @@ func (c *Coordinator) KnownClients() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	limit := time.Now().Add(-*registrationTimeout)
+	limit := time.Now().Add(-registrationTimeout)
 	known := make([]string, 0, len(c.known))
 	for k, t := range c.known {
 		if limit.Before(t) {
@@ -210,7 +203,7 @@ func (c *Coordinator) gc() {
 		func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
-			limit := time.Now().Add(-*registrationTimeout)
+			limit := time.Now().Add(-registrationTimeout)
 			deleted := 0
 			for k, ts := range c.known {
 				if ts.Before(limit) {

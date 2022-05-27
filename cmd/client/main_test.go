@@ -35,7 +35,7 @@ func prepareTest() (*httptest.Server, Coordinator) {
 		fmt.Fprintln(w, "GET /index.html HTTP/1.0\n\nOK")
 	}))
 	c := Coordinator{logger: &TestLogger{}}
-	*proxyURL = ts.URL
+	proxyURL = ts.URL
 	return ts, c
 }
 
@@ -48,7 +48,7 @@ func TestDoScrape(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Add("X-Prometheus-Scrape-Timeout-Seconds", "10.0")
-	*myFqdn = ts.URL
+	fqdn = ts.URL
 	c.doScrape(req, ts.Client())
 }
 

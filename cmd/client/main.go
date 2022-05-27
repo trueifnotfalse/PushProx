@@ -19,7 +19,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"flag"
 	"fmt"
+	"github.com/spf13/pflag"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -28,9 +30,6 @@ import (
 	"strings"
 	"time"
 
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
-
-	"github.com/Showmax/go-fqdn"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -39,19 +38,40 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/promlog"
-	"github.com/prometheus/common/promlog/flag"
+	"github.com/spf13/viper"
+)
+
+const (
+	fqdnEnv              = "FQDN"
+	fqdnFlag             = "fqdn"
+	proxyURLEnv          = "PROXY_URL"
+	proxyURLFlag         = "proxy-url"
+	tlsCacertEnv         = "TLS_CACERT"
+	tlsCacertFlag        = "tls.cacert"
+	tlsCertEnv           = "TLS_CERT"
+	tlsCertFlag          = "tls.cert"
+	tlsKeyEnv            = "TLS_KEY"
+	tlsKeyFlag           = "tls.key"
+	metricsAddrEnv       = "METRICS_ADDR"
+	metricsAddrFlag      = "metrics-addr"
+	retryInitialWaitEnv  = "RETRY_INITIAL_WAIT"
+	retryInitialWaitFlag = "proxy.retry.initial-wait"
+	retryMaxWaitEnv      = "RETRY_MAX_WAIT"
+	retryMaxWaitFlag     = "proxy.retry.max-wait"
+	logLevelEnv          = "LOG_LEVEL"
+	logLevelFlag         = "log.level"
 )
 
 var (
-	myFqdn      = kingpin.Flag("fqdn", "FQDN to register with").Default(fqdn.Get()).String()
-	proxyURL    = kingpin.Flag("proxy-url", "Push proxy to talk to.").Required().String()
-	caCertFile  = kingpin.Flag("tls.cacert", "<file> CA certificate to verify peer against").String()
-	tlsCert     = kingpin.Flag("tls.cert", "<cert> Client certificate file").String()
-	tlsKey      = kingpin.Flag("tls.key", "<key> Private key file").String()
-	metricsAddr = kingpin.Flag("metrics-addr", "Serve Prometheus metrics at this address").Default(":9369").String()
-
-	retryInitialWait = kingpin.Flag("proxy.retry.initial-wait", "Amount of time to wait after proxy failure").Default("1s").Duration()
-	retryMaxWait     = kingpin.Flag("proxy.retry.max-wait", "Maximum amount of time to wait between proxy poll retries").Default("5s").Duration()
+	fqdn             string
+	proxyURL         string
+	caCertFile       string
+	tlsCert          string
+	tlsKey           string
+	metricsAddr      string
+	retryInitialWait time.Duration
+	retryMaxWait     time.Duration
+	logLevel         string
 )
 
 var (
@@ -75,15 +95,62 @@ var (
 	)
 )
 
+func initEnv() {
+	viper.BindEnv(fqdnFlag, fqdnEnv)
+	viper.BindEnv(proxyURLFlag, proxyURLEnv)
+	viper.BindEnv(tlsCacertFlag, tlsCacertEnv)
+	viper.BindEnv(tlsCertFlag, tlsCertEnv)
+	viper.BindEnv(tlsKeyFlag, tlsKeyEnv)
+	viper.BindEnv(metricsAddrFlag, metricsAddrEnv)
+	viper.BindEnv(retryInitialWaitFlag, retryInitialWaitEnv)
+	viper.BindEnv(retryMaxWaitFlag, retryMaxWaitEnv)
+	viper.BindEnv(logLevelFlag, logLevelEnv)
+
+	viper.SetDefault(metricsAddrEnv, ":9369")
+	viper.SetDefault(retryInitialWaitEnv, time.Duration(time.Second))
+	viper.SetDefault(retryMaxWaitEnv, time.Duration(5*time.Second))
+	viper.SetDefault(logLevelEnv, "info")
+}
+
+func initFlags() {
+	pflag.String(fqdnFlag, "", "FQDN to register with")
+	pflag.String(proxyURLFlag, "", "Push proxy to talk to.")
+	pflag.String(tlsCacertFlag, "", "<file> CA certificate to verify peer against")
+	pflag.String(tlsCertFlag, "", "<cert> Client certificate file")
+	pflag.String(tlsKeyFlag, "", "<key> Private key file")
+	pflag.String(metricsAddrFlag, ":9369", "Serve Prometheus metrics at this address")
+	pflag.Duration(retryInitialWaitFlag, time.Duration(time.Second), "Amount of seconds to wait after proxy failure")
+	pflag.Duration(retryMaxWaitFlag, time.Duration(5*time.Second), "Maximum amount of seconds to wait between proxy poll retries")
+	pflag.String(logLevelFlag, "info", "Only log messages with the given severity or above. One of: [debug, info, warn, error]")
+	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
+	pflag.Parse()
+	viper.BindPFlags(pflag.CommandLine)
+}
+
+func loadConfigParams() {
+	fqdn = viper.GetString(fqdnFlag)
+	proxyURL = viper.GetString(proxyURLFlag)
+	caCertFile = viper.GetString(tlsCacertFlag)
+	tlsCert = viper.GetString(tlsCertFlag)
+	tlsKey = viper.GetString(tlsCertFlag)
+	metricsAddr = viper.GetString(metricsAddrFlag)
+	retryInitialWait = viper.GetDuration(retryInitialWaitFlag)
+	retryMaxWait = viper.GetDuration(retryMaxWaitFlag)
+	logLevel = viper.GetString(logLevelFlag)
+}
+
 func init() {
+	initEnv()
+	initFlags()
+	loadConfigParams()
 	prometheus.MustRegister(pushErrorCounter, pollErrorCounter, scrapeErrorCounter)
 }
 
 func newBackOffFromFlags() backoff.BackOff {
 	b := backoff.NewExponentialBackOff()
-	b.InitialInterval = *retryInitialWait
+	b.InitialInterval = retryInitialWait
 	b.Multiplier = 1.5
-	b.MaxInterval = *retryMaxWait
+	b.MaxInterval = retryMaxWait
 	b.MaxElapsedTime = time.Duration(0)
 	return b
 }
@@ -128,7 +195,7 @@ func (c *Coordinator) doScrape(request *http.Request, client *http.Client) {
 		request.URL.RawQuery = params.Encode()
 	}
 
-	if request.URL.Hostname() != *myFqdn {
+	if request.URL.Hostname() != fqdn {
 		c.handleErr(request, client, errors.New("scrape target doesn't match client fqdn"))
 		return
 	}
@@ -155,7 +222,7 @@ func (c *Coordinator) doPush(resp *http.Response, origRequest *http.Request, cli
 	deadline, _ := origRequest.Context().Deadline()
 	resp.Header.Set("X-Prometheus-Scrape-Timeout", fmt.Sprintf("%f", float64(time.Until(deadline))/1e9))
 
-	base, err := url.Parse(*proxyURL)
+	base, err := url.Parse(proxyURL)
 	if err != nil {
 		return err
 	}
@@ -182,7 +249,7 @@ func (c *Coordinator) doPush(resp *http.Response, origRequest *http.Request, cli
 }
 
 func (c *Coordinator) doPoll(client *http.Client) error {
-	base, err := url.Parse(*proxyURL)
+	base, err := url.Parse(proxyURL)
 	if err != nil {
 		level.Error(c.logger).Log("msg", "Error parsing url:", "err", err)
 		return errors.Wrap(err, "error parsing url")
@@ -193,7 +260,7 @@ func (c *Coordinator) doPoll(client *http.Client) error {
 		return errors.Wrap(err, "error parsing url poll")
 	}
 	url := base.ResolveReference(u)
-	resp, err := client.Post(url.String(), "", strings.NewReader(*myFqdn))
+	resp, err := client.Post(url.String(), "", strings.NewReader(fqdn))
 	if err != nil {
 		level.Error(c.logger).Log("msg", "Error polling:", "err", err)
 		return errors.Wrap(err, "error polling")
@@ -229,24 +296,23 @@ func (c *Coordinator) loop(bo backoff.BackOff, client *http.Client) {
 }
 
 func main() {
-	promlogConfig := promlog.Config{}
-	flag.AddFlags(kingpin.CommandLine, &promlogConfig)
-	kingpin.HelpFlag.Short('h')
-	kingpin.Parse()
+	var logL promlog.AllowedLevel
+	logL.Set(logLevel)
+	promlogConfig := promlog.Config{Level: &logL}
 	logger := promlog.New(&promlogConfig)
 	coordinator := Coordinator{logger: logger}
 
-	if *proxyURL == "" {
+	if proxyURL == "" {
 		level.Error(coordinator.logger).Log("msg", "--proxy-url flag must be specified.")
 		os.Exit(1)
 	}
 	// Make sure proxyURL ends with a single '/'
-	*proxyURL = strings.TrimRight(*proxyURL, "/") + "/"
-	level.Info(coordinator.logger).Log("msg", "URL and FQDN info", "proxy_url", *proxyURL, "fqdn", *myFqdn)
+	proxyURL = strings.TrimRight(proxyURL, "/") + "/"
+	level.Info(coordinator.logger).Log("msg", "URL and FQDN info", "proxy_url", proxyURL, "fqdn", fqdn)
 
 	tlsConfig := &tls.Config{}
-	if *tlsCert != "" {
-		cert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+	if tlsCert != "" {
+		cert, err := tls.LoadX509KeyPair(tlsCert, tlsKey)
 		if err != nil {
 			level.Error(coordinator.logger).Log("msg", "Certificate or Key is invalid", "err", err)
 			os.Exit(1)
@@ -258,8 +324,8 @@ func main() {
 		tlsConfig.BuildNameToCertificate()
 	}
 
-	if *caCertFile != "" {
-		caCert, err := ioutil.ReadFile(*caCertFile)
+	if caCertFile != "" {
+		caCert, err := ioutil.ReadFile(caCertFile)
 		if err != nil {
 			level.Error(coordinator.logger).Log("msg", "Not able to read cacert file", "err", err)
 			os.Exit(1)
@@ -273,9 +339,9 @@ func main() {
 		tlsConfig.RootCAs = caCertPool
 	}
 
-	if *metricsAddr != "" {
+	if metricsAddr != "" {
 		go func() {
-			if err := http.ListenAndServe(*metricsAddr, promhttp.Handler()); err != nil {
+			if err := http.ListenAndServe(metricsAddr, promhttp.Handler()); err != nil {
 				level.Warn(coordinator.logger).Log("msg", "ListenAndServe", "err", err)
 			}
 		}()

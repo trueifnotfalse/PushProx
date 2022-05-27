@@ -18,33 +18,44 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
+	"github.com/prometheus-community/pushprox/util"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/common/promlog"
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"strings"
-
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
-
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prometheus/common/promlog"
-	"github.com/prometheus/common/promlog/flag"
-
-	"github.com/prometheus-community/pushprox/util"
+	"time"
 )
 
 const (
-	namespace = "pushprox_proxy" // For Prometheus metrics.
+	namespace                = "pushprox_proxy" // For Prometheus metrics.
+	listenAddressEnv         = "LISTEN_ADDRESS"
+	listenAddressFlag        = "web.listen-address"
+	maxScrapeTimeoutEnv      = "SCRAPE_MAX_TIMEOUT"
+	maxScrapeTimeoutFlag     = "scrape.max-timeout"
+	defaultScrapeTimeoutEnv  = "SCRAPE_DEFAULT_TIMEOUT"
+	defaultScrapeTimeoutFlag = "scrape.default-timeout"
+	registrationTimeoutEnv   = "REGISTRATION_TIMEOUT"
+	registrationTimeoutFlag  = "registration.timeout"
+	logLevelEnv              = "LOG_LEVEL"
+	logLevelFlag             = "log.level"
 )
 
 var (
-	listenAddress        = kingpin.Flag("web.listen-address", "Address to listen on for proxy and client requests.").Default(":8080").String()
-	maxScrapeTimeout     = kingpin.Flag("scrape.max-timeout", "Any scrape with a timeout higher than this will have to be clamped to this.").Default("5m").Duration()
-	defaultScrapeTimeout = kingpin.Flag("scrape.default-timeout", "If a scrape lacks a timeout, use this value.").Default("15s").Duration()
+	listenAddress        string
+	maxScrapeTimeout     time.Duration
+	defaultScrapeTimeout time.Duration
+	registrationTimeout  time.Duration
+	logLevel             string
 )
 
 var (
@@ -68,7 +79,43 @@ var (
 		}, []string{"path"})
 )
 
+func initEnv() {
+	viper.BindEnv(listenAddressFlag, listenAddressEnv)
+	viper.BindEnv(maxScrapeTimeoutFlag, maxScrapeTimeoutEnv)
+	viper.BindEnv(defaultScrapeTimeoutFlag, defaultScrapeTimeoutEnv)
+	viper.BindEnv(registrationTimeoutFlag, registrationTimeoutEnv)
+	viper.BindEnv(logLevelFlag, logLevelEnv)
+
+	viper.SetDefault(listenAddressEnv, ":8080")
+	viper.SetDefault(maxScrapeTimeoutEnv, time.Duration(5*60*time.Second))
+	viper.SetDefault(defaultScrapeTimeoutEnv, time.Duration(15*time.Second))
+	viper.SetDefault(registrationTimeoutEnv, time.Duration(5*60*time.Second))
+	viper.SetDefault(logLevelEnv, "info")
+}
+
+func initFlags() {
+	pflag.String(listenAddressFlag, ":8080", "Address to listen on for proxy and client requests.")
+	pflag.Duration(maxScrapeTimeoutFlag, time.Duration(5*60*time.Second), "Any scrape with a timeout higher than this will have to be clamped to this.")
+	pflag.Duration(defaultScrapeTimeoutFlag, time.Duration(15*time.Second), "If a scrape lacks a timeout, use this value.")
+	pflag.Duration(registrationTimeoutFlag, time.Duration(5*60*time.Second), "After how long a registration expires.")
+	pflag.String(logLevelFlag, "info", "Only log messages with the given severity or above. One of: [debug, info, warn, error]")
+	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
+	pflag.Parse()
+	viper.BindPFlags(pflag.CommandLine)
+}
+
+func loadConfigParams() {
+	listenAddress = viper.GetString(listenAddressFlag)
+	maxScrapeTimeout = viper.GetDuration(maxScrapeTimeoutFlag)
+	defaultScrapeTimeout = viper.GetDuration(defaultScrapeTimeoutFlag)
+	registrationTimeout = viper.GetDuration(registrationTimeoutFlag)
+	logLevel = viper.GetString(logLevelFlag)
+}
+
 func init() {
+	initEnv()
+	initFlags()
+	loadConfigParams()
 	prometheus.MustRegister(httpAPICounter, httpProxyCounter, httpPathHistogram)
 }
 
@@ -171,7 +218,7 @@ func (h *httpHandler) handleListClients(w http.ResponseWriter, r *http.Request) 
 
 // handleProxy handles proxied scrapes from Prometheus.
 func (h *httpHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), util.GetScrapeTimeout(maxScrapeTimeout, defaultScrapeTimeout, r.Header))
+	ctx, cancel := context.WithTimeout(r.Context(), util.GetScrapeTimeout(&maxScrapeTimeout, &defaultScrapeTimeout, r.Header))
 	defer cancel()
 	request := r.WithContext(ctx)
 	request.RequestURI = ""
@@ -196,10 +243,9 @@ func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	promlogConfig := promlog.Config{}
-	flag.AddFlags(kingpin.CommandLine, &promlogConfig)
-	kingpin.HelpFlag.Short('h')
-	kingpin.Parse()
+	var logL promlog.AllowedLevel
+	logL.Set(logLevel)
+	promlogConfig := promlog.Config{Level: &logL}
 	logger := promlog.New(&promlogConfig)
 	coordinator, err := NewCoordinator(logger)
 	if err != nil {
@@ -210,8 +256,8 @@ func main() {
 	mux := http.NewServeMux()
 	handler := newHTTPHandler(logger, coordinator, mux)
 
-	level.Info(logger).Log("msg", "Listening", "address", *listenAddress)
-	if err := http.ListenAndServe(*listenAddress, handler); err != nil {
+	level.Info(logger).Log("msg", "Listening", "address", listenAddress)
+	if err := http.ListenAndServe(listenAddress, handler); err != nil {
 		level.Error(logger).Log("msg", "Listening failed", "err", err)
 		os.Exit(1)
 	}

@@ -44,6 +44,32 @@ If the target must be scraped over SSL/TLS, add:
 rather than the usual `scheme: https`. Only the default `scheme: http` works with the proxy,
 so this workaround is required.
 
+### Command line flags
+
+#### Proxy
+
+| Name                    | Environment Variable Name      | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+|-------------------------|--------------------------------|---------------------------------------------------------------------------------------------------------------------|
+| web.listen-address      | LISTEN_ADDRESS                 | Address to listen on for proxy and client requests, defaults to `:8080`.                                            |
+| scrape.max-timeout      | SCRAPE_MAX_TIMEOUT             | Any scrape with a timeout higher than this will have to be clamped to this, defaults to 5 minutes.                  |
+| scrape.default-timeout  | SCRAPE_DEFAULT_TIMEOUT         | If a scrape lacks a timeout, use this value, defaults to 15 seconds.                                                |
+| registration.timeout    | REGISTRATION_TIMEOUT           | After how long a registration expires, defaults to 5 minutes.                                                       |
+| log.level               | LOG_LEVEL                      | Only log messages with the given severity or above. One of: [`debug`, `info`, `warn`, `error`], defaults to `info`. |
+
+#### Client
+
+| Name                     | Environment Variable Name  | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+|--------------------------|----------------------------|---------------------------------------------------------------------------------------------------------------------|
+| fqdn                     | FQDN                       | FQDN to register with.                                                                                              |
+| proxy-url                | PROXY_URL                  | Push proxy to talk to.                                                                                              |
+| tls.cacert               | TLS_CACERT                 | <file> CA certificate to verify peer against.                                                                       |
+| tls.cert                 | TLS_CERT                   | <cert> Client certificate file.                                                                                     |
+| tls.key                  | TLS_KEY                    | <key> Private key file.                                                                                             |
+| metrics-addr             | METRICS_ADDR               | Serve Prometheus metrics at this address, defaults to `:9369`.                                                      |
+| proxy.retry.initial-wait | RETRY_INITIAL_WAIT         | Amount of seconds to wait after proxy failure, defaults to 1 second.                                                |
+| proxy.retry.max-wait     | RETRY_MAX_WAIT             | Maximum amount of seconds to wait between proxy poll retries, defaults to 5 seconds.                                |
+| log.level                | LOG_LEVEL                  | Only log messages with the given severity or above. One of: [`debug`, `info`, `warn`, `error`], defaults to `info`. |
+
 ## Service Discovery
 
 The `/clients` endpoint will return a list of all registered clients in the format
